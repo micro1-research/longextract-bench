@@ -150,12 +150,13 @@ applies to every output envelope.
 ## 6. Why the scores are point-in-time
 
 The systems are stochastic and the upstream APIs change over time, so the absolute
-numbers are a snapshot, not a constant. What is reproducible is the **methodology**:
+numbers are a snapshot, not a constant. What stays fixed is the **methodology and the
+grader**:
 
 * the **grader is fully deterministic** — same inputs, same scores, every run;
 * key inference is sorted/seed-independent, so grades do not vary across processes;
 * the dataset can be **pinned to an exact commit** with `--revision`.
 
 When publishing numbers, record the run date and the resolved model IDs (the runner
-logs them). The grader will reproduce the same scores from the same outputs forever; the
-live systems may not.
+logs them). The grader produces the same scores from the same outputs every time; the
+live systems do not.

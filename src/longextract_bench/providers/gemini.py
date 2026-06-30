@@ -161,7 +161,7 @@ def extract(
     )
 
     result = json.loads(cand["content"]["parts"][0]["text"])
-    # Track the full response metadata for transparency and reproducibility.
+    # Track the full response metadata for transparency and traceability.
     details = {
         "usageMetadata": usage,
         "modelVersion": data.get("modelVersion"),
@@ -196,7 +196,7 @@ def main() -> None:
             break
 
     # `usage` holds the FULL metadata blob (usageMetadata tokens, model version,
-    # response id, finishReason) for transparency and reproducibility.
+    # response id, finishReason) for transparency and traceability.
     write_output(
         args.out, provider="gemini", result=result,
         latency_s=latency_s, usage=details,

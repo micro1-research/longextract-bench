@@ -193,7 +193,7 @@ def main() -> None:
     extract_resp = body.get("result") or {}
     extraction = extract_resp.get("result", extract_resp)
     usage = dict(extract_resp.get("usage") or {})
-    usage["job_id"] = job_id  # recorded so latency is reproducible
+    usage["job_id"] = job_id  # recorded so latency is auditable
 
     write_output(
         args.out, provider="reducto", result=extraction,

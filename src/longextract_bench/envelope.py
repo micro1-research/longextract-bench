@@ -24,7 +24,7 @@ def write_output(
     extraction plus wall-clock latency in the same shape.
 
     `usage` holds the raw vendor usage/response block (page counts, token counts,
-    job metadata) exactly as returned, for transparency and reproducibility.
+    job metadata) exactly as returned, for transparency and traceability.
     """
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(

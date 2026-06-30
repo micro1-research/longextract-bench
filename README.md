@@ -24,7 +24,7 @@ number.
   the reporting tooling.
 - **Data** ([`micro1-inc/longextract-bench-50`](https://huggingface.co/datasets/micro1-inc/longextract-bench-50)
   on Hugging Face): the 50 document folders. **Not committed here**; it is downloaded on
-  demand (see [Reproducing](#reproducing)).
+  demand (see [Generating extractions](#generating-extractions)).
 
 ## What's being tested
 
@@ -92,7 +92,9 @@ intend to run. Each system runs in its own highest-accuracy configuration (see
 | Google Gemini | `generateContent`, native `response_schema` | `GEMINI_API_KEY` |
 | Datalab | `/extract`, `balanced` tier | `DATALAB_API_KEY` |
 
-## Reproducing
+## Generating extractions
+
+The 50 documents published here are a **subset of the full LongExtractBench corpus** — drawn from the same documents the systems were evaluated on — released so the extraction task can be run and inspected independently.
 
 The benchmark data is **not** in this repo; the first run downloads it from
 [`micro1-inc/longextract-bench-50`](https://huggingface.co/datasets/micro1-inc/longextract-bench-50)
@@ -126,10 +128,12 @@ lxbench-run --run-dir runs/latest --providers openai,claude -j 4
 > **Running `lxbench-run` calls paid third-party APIs.** A full 7-system × 50-document
 > sweep is real spend. The grader and reporter are free and offline.
 
-A full re-run is **point-in-time**: the models are stochastic and the APIs change, so
-run-to-run deltas are expected. Record the run date and the resolved model IDs (the
-runner logs them); the *grader itself is fully deterministic*, so the methodology
-reproduces even when the numbers drift.
+Running these commands **generates a fresh set of extractions** on the public corpus and
+then grades and reports them — it produces your own run, not a copy of any previously
+published numbers. The scores are **point-in-time**: the systems are stochastic and the
+upstream APIs change, so run-to-run deltas are expected. Record the run date and the
+resolved model IDs (the runner logs them); the *grader itself is fully deterministic* —
+the same outputs always grade to the same scores.
 
 ## Metrics
 

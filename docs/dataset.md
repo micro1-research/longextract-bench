@@ -75,7 +75,7 @@ DS.ground_truth_path(docs[0])   # -> <doc>/ground_truth.json
   cache.
 * **Pinning a revision:** `DEFAULT_REVISION` in `dataset.py` is unset until the dataset is
   published; pass `--revision <commit-sha>` to `lxbench-run` / `lxbench-grade` to pin the
-  exact bytes for a reproducible run.
+  exact dataset bytes a run reads.
 
 The snapshot is **read-only**. Provider outputs and grades are written to a separate,
 gitignored `runs/<run-dir>/` tree — never into the dataset cache. The output path for

@@ -143,7 +143,7 @@ def main() -> None:
             print(f"  {key}: {len(v)} rows")
 
     # `usage` holds the FULL metadata blob (token usage, timestamps, model,
-    # service_tier, timing) for transparency and reproducibility.
+    # service_tier, timing) for transparency and traceability.
     write_output(
         args.out, provider="openai", result=result,
         latency_s=latency_s, usage=details,

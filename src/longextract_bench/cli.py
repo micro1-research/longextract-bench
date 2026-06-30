@@ -1,6 +1,6 @@
 """Console entry points: lxbench-run / lxbench-grade / lxbench-report.
 
-Reproduce a full run:
+Generate extractions, then grade and report a run:
 
     lxbench-run    --run-dir runs/latest
     lxbench-grade  --run-dir runs/latest
