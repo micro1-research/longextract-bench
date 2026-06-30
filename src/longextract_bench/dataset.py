@@ -20,7 +20,7 @@ from .grading import GT_NAMES, SCHEMA_NAMES
 
 # Hugging Face dataset coordinates. Pin a revision once the dataset is published so
 # every run resolves the exact same bytes; `--revision` (CLI) overrides at runtime.
-DEFAULT_REPO_ID = "micro1/longextract-bench-50"
+DEFAULT_REPO_ID = "micro1-inc/longextract-bench-50"
 DEFAULT_REVISION: str | None = None  # set to a pinned commit SHA at publish time
 
 # Local cache for the downloaded snapshot (gitignored).

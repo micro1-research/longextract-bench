@@ -4,7 +4,7 @@ LongExtractBench evaluates on **50 document folders**, hosted on Hugging Face an
 downloaded + cached at runtime. Nothing is committed to git: the corpus lives at
 
 ```
-micro1/longextract-bench-50   (repo_type="dataset")
+micro1-inc/longextract-bench-50   (repo_type="dataset")
 ```
 
 and the resolver in `src/longextract_bench/dataset.py` is the single place that knows
@@ -91,7 +91,8 @@ runs/<run-dir>/<slug>/<system>.json
 
 * The dataset is licensed **CC-BY-4.0** (stated on the Hugging Face dataset card).
 * The benchmark code is **MIT** (`LICENSE`).
-* The corpus and benchmark are published independently by **Micro1**. The systems
-  evaluated are not affiliated with the publication and are all treated as peers.
+* The benchmark was **commissioned by Reducto** and **independently audited and validated
+  by micro1**. The systems evaluated (Reducto among them) are not affiliated with the audit
+  and are all treated as peers.
 
 If you use the dataset, please attribute it per CC-BY-4.0.

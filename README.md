@@ -2,13 +2,17 @@
 
 ## Abstract
 
-**Micro1 LongExtractBench** is a benchmark for structured
+**LongExtractBench** is a benchmark for structured
 data extraction from long documents. It measures how well a document-extraction system
 turns a long PDF into structured JSON that conforms to a supplied JSON Schema, scored
 against a human-reviewed answer key.
 
-Every system is treated as a peer: each runs in its own highest-accuracy configuration,
-behind the same prompt, the same dataset, and the same deterministic grader.
+This benchmark was **commissioned by Reducto** and **independently audited and validated
+by micro1**: micro1 reviewed the methodology, re-ran and re-graded the systems, and
+reconciled the ground-truth answer keys. Reducto is one of the systems evaluated and is
+held to the same bar as every other. Each system is treated as a peer, running in its own
+highest-accuracy configuration behind the same prompt, the same dataset, and the same
+deterministic grader.
 
 Its central design choice is that **completion is a first-class result**. Accuracy is
 reported only over the documents a system actually completed, with the count of
@@ -18,7 +22,7 @@ number.
 
 - **Code** (this repo, GitHub): the runner, the deterministic grader, the scorer, and
   the reporting tooling.
-- **Data** ([`micro1/longextract-bench-50`](https://huggingface.co/datasets/micro1/longextract-bench-50)
+- **Data** ([`micro1-inc/longextract-bench-50`](https://huggingface.co/datasets/micro1-inc/longextract-bench-50)
   on Hugging Face): the 50 document folders. **Not committed here**; it is downloaded on
   demand (see [Reproducing](#reproducing)).
 
@@ -41,7 +45,7 @@ buckets (flat single-table to deeply nested multi-array), and document domain (f
 scientific/technical, regulatory, tabular, and others) — so the benchmark exercises the
 full range of difficulty, not just the easy middle.
 
-It is hosted on Hugging Face as [`micro1/longextract-bench-50`](https://huggingface.co/datasets/micro1/longextract-bench-50)
+It is hosted on Hugging Face as [`micro1-inc/longextract-bench-50`](https://huggingface.co/datasets/micro1-inc/longextract-bench-50)
 (`repo_type="dataset"`) and downloaded + cached at runtime; nothing is committed to git.
 The dataset card describes the *distribution* only — it carries no per-document
 annotations about which systems succeed or fail.
@@ -91,7 +95,7 @@ intend to run. Each system runs in its own highest-accuracy configuration (see
 ## Reproducing
 
 The benchmark data is **not** in this repo; the first run downloads it from
-[`micro1/longextract-bench-50`](https://huggingface.co/datasets/micro1/longextract-bench-50)
+[`micro1-inc/longextract-bench-50`](https://huggingface.co/datasets/micro1-inc/longextract-bench-50)
 into a local cache (`.hf_cache/` by default, or `$LXBENCH_CACHE_DIR`). Set
 `HF_HUB_OFFLINE=1` afterwards to work fully offline, or pass `--revision <commit-sha>`
 to pin an exact dataset commit.

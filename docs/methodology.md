@@ -45,21 +45,33 @@ precision = matched_rows / predicted_rows         "did it return only real rows,
 Document-level scalars are single values, not rows, so they never move precision or
 recall.
 
-### Leaf accuracy — over EVERY value
+### Leaf accuracy — over matched rows + document scalars
 
 ```
 leaf_accuracy = 100 × correct_leaves / total_leaves
 ```
 
-A *leaf* is an individual scalar value: a cell in a matched row, a top-level scalar, a
-nested-object field, a scalar inside a nested array (compared as a multiset), and so on
-recursively. Extra or missing array elements contribute their leaves as misses, so
-padding and omissions both cost accuracy. This is "of all the individual values, how
-many are exactly right?"
+A *leaf* is an individual scalar value. The leaf pool is **every document-level scalar
+field plus every cell inside a row that matched** (rows are paired in §3), counted
+recursively: a scalar, a nested-object field, a scalar inside a nested array (compared as
+a multiset), or an object inside a nested array (recursed element by element).
 
-> Leaf accuracy is only meaningful when reported **alongside** precision and recall.
-> The leaderboard always shows all three together for exactly this reason — see the note
-> on key inference in §3.
+Two cases behave differently, by design:
+
+* **Top-level array rows that do not match are *not* in the leaf pool.** A predicted row
+  with no ground-truth partner (padding) or a ground-truth row the system never returned
+  (omission) is charged to **precision** and **recall** — not to leaf accuracy. Leaf
+  accuracy is computed only over the rows the system actually matched.
+* **Inside a matched row, nested-array elements that don't line up *do* count as misses**
+  (their leaves are added to the total but not the matches), so padding/omission *within*
+  a matched row still costs accuracy.
+
+So leaf accuracy answers "of the values on the rows it found, how many are exactly
+right?" — which is why it is only meaningful read **alongside** precision and recall.
+
+> A system can post high leaf accuracy on the handful of rows it matched while missing
+> most of the table; **recall** is what exposes that. The leaderboard always shows all
+> three together for exactly this reason — see §3 on key inference.
 
 ---
 
@@ -75,12 +87,15 @@ no hand-picked keys, so there is no lever to bias the result. The key is inferre
 2. **Composite key** — if no single column qualifies, greedily combine dimension
    columns (e.g. region + gender) until the combination is near-unique on the ground
    truth.
-3. **Positional** — if neither works, align by index.
+3. **No key** — if neither qualifies, all rows fall into a single bucket and are paired
+   by content (below), not by position.
 
-Rows are then bucketed by key and paired **by content** within each bucket: identical
-rows lock first, then the best-overlap residual is matched greedily. Each ground-truth
-row can be claimed once, so duplicate rows a system emits stay unmatched and correctly
-lower its precision.
+Rows are then bucketed by key (one bucket when there is no key) and paired **by content**
+within each bucket: identical rows lock first, then the best-overlap residual is matched
+greedily. Only when a bucket's residual is too large to pair greedily does it fall back
+to positional order, purely to bound the cost — never as the primary alignment. Each
+ground-truth row can be claimed once, so duplicate rows a system emits stay unmatched and
+correctly lower its precision.
 
 Because the key is anchored on the ground truth, a system that mis-extracts the key
 simply produces unmatched rows (its own precision/recall hit) — it never forces a

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import random
+import re
 import subprocess
 import sys
 import time
@@ -24,6 +25,53 @@ from pathlib import Path
 
 from . import dataset as DS
 from .providers import PROVIDERS
+
+# Provider API-key env vars whose VALUES must never reach a log line or run artifact.
+_SECRET_ENV_VARS = (
+    "REDUCTO_API_KEY",
+    "EXTEND_API_KEY",
+    "LLAMA_CLOUD_API_KEY",
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "GEMINI_API_KEY",
+    "DATALAB_API_KEY",
+)
+
+# Credential-shaped substrings, redacted regardless of which env var produced them, so
+# an unknown/leaked token is caught even when it is not one of our env values. Each is a
+# (pattern, replacement) pair; the replacement keeps the label and drops only the secret.
+_SECRET_PATTERNS = (
+    # credential-bearing URL query params — Gemini puts the API key in the request URL.
+    (re.compile(r"(?i)([?&](?:api[_-]?key|key|token|access_token)=)[\w.\-]{6,}"), r"\1<redacted>"),
+    # auth headers (Authorization / X-API-Key), with optional quotes and `Bearer` prefix.
+    (re.compile(r"(?i)((?:authorization|x-api-key)['\"]?\s*[:=]\s*['\"]?)(?:bearer\s+)?[\w.\-]{6,}"), r"\1<redacted>"),
+    # bare "Bearer <token>".
+    (re.compile(r"(?i)(bearer\s+)[\w.\-]{6,}"), r"\1<redacted>"),
+    # vendor key prefixes anywhere (OpenAI `sk-`, LlamaCloud `llx-`, Google `AIza...`).
+    (re.compile(r"\b((?:sk|llx)-)[\w.\-]{8,}"), r"\1<redacted>"),
+    (re.compile(r"\b(AIza)[\w.\-]{10,}"), r"\1<redacted>"),
+)
+
+
+def _sanitize(text: str) -> str:
+    """Redact anything credential-shaped from provider stderr before it is logged or
+    persisted in a run artifact.
+
+    Two passes: (1) replace the literal VALUE of any known provider key env var with
+    `<VAR:redacted>` (catches a key echoed verbatim in a request URL or header dump);
+    (2) regex-redact credential-shaped substrings (query params, auth headers, vendor
+    key prefixes) so an unknown token is caught even if it is not one of our env values.
+    Idempotent — safe to apply more than once."""
+    if not text:
+        return text
+    out = text
+    for var in _SECRET_ENV_VARS:
+        val = os.environ.get(var)
+        if val and len(val) >= 8:
+            out = out.replace(val, f"<{var}:redacted>")
+    for pat, repl in _SECRET_PATTERNS:
+        out = pat.sub(repl, out)
+    return out
 
 
 def write_failure_marker(out: Path, prov: str, err: str, attempts: int) -> None:
@@ -40,7 +88,7 @@ def write_failure_marker(out: Path, prov: str, err: str, attempts: int) -> None:
             "_meta": {
                 "provider": prov,
                 "status": "failed",
-                "error": err[:500],
+                "error": _sanitize(err)[:500],  # defense-in-depth: never persist a key
                 "attempts": attempts,
                 "latency_s": None,
                 "usage": None,
@@ -77,7 +125,7 @@ def run_one(
             dt = time.time() - t0
             if r.returncode == 0 and out.exists():
                 return (slug, prov, "ok" if attempt == 1 else f"ok(retry {attempt})", dt)
-            full_err = r.stderr.strip()
+            full_err = _sanitize(r.stderr.strip())  # redact any leaked key before log/artifact
             last = f"rc={r.returncode}: {full_err[-140:]}"
             timed_out = False
         except subprocess.TimeoutExpired:

@@ -13,19 +13,25 @@ A document is mostly large *arrays* of rows plus a few *document-level* scalar f
                                                           rows, or pad with junk?")
     Document-level scalars are single values, not rows, so they never move P/R.
 
-  * leaf accuracy        — EVERY leaf in the document, nothing skipped:
+  * leaf accuracy        — values on MATCHED array rows + document-level scalars:
         cells in matched array rows + top-level scalars + nested-object fields
         + nested objects inside rows + nested arrays inside rows (scalar arrays as a
         multiset, object arrays recursed element by element).
-    "Of all the individual values, how many are exactly right?"
+    Top-level array rows that do NOT match are charged to precision/recall, not here, so
+    their leaves are NOT in the pool; but inside a matched row, nested-array elements that
+    don't line up DO count as misses.
+    "Of the values on the rows it matched, how many are exactly right?"
 
 HOW ROWS ARE PAIRED
 -------------------
 To compare two row lists we infer a primary KEY from the data (no hand-picking, so no
 way to bias the result): a single column that uniquely identifies rows if one exists,
-else a unique *combination* of columns, else positional (index) alignment. Rows are
-paired by key; each ground-truth row can be claimed once, so duplicate rows a model
-emits stay unmatched and correctly lower precision.
+else a unique *combination* of columns, else no key at all. Rows are then bucketed by
+key (one bucket when there is no key) and paired BY CONTENT within each bucket —
+identical rows lock first, then the best-overlap residual greedily; only when a bucket's
+residual is too large to pair greedily does it fall back to positional order to bound
+cost. Each ground-truth row can be claimed once, so duplicate rows a model emits stay
+unmatched and correctly lower precision.
 
 FAIRNESS
 --------
@@ -131,7 +137,7 @@ def unwrap(o: Json) -> Json:
     return o
 
 
-# ── key inference (single -> composite -> index) ────────────────────────────────
+# ── key inference (single -> composite -> no key) ───────────────────────────────
 
 
 def _scalar_field_names(rows: list[dict[str, Json]]) -> set[str]:
@@ -153,7 +159,7 @@ def infer_row_key(
     2. Composite key — if no single column qualifies, greedily combine matchable
        *dimension* columns (non-unique alone, e.g. region+gender) until the
        combination is near-unique on both sides.
-    3. [] — neither works; the caller index-aligns.
+    3. [] — neither works; the caller puts all rows in one bucket and content-pairs.
     """
     if not rows_p or not rows_g:
         return []
@@ -184,8 +190,8 @@ def infer_row_key(
     # uniquely identifies GT rows; we do NOT require the competitor to also have a
     # usable key. `match_rate` only PREFERS a GT-key the competitor populated (tie-
     # break), never gates it. A competitor that mis-extracts the key just produces
-    # unmatched rows (its own precision/recall hit) instead of forcing a positional
-    # index-align that manufactures false per-cell errors.
+    # unmatched rows (its own precision/recall hit) instead of being force-paired
+    # against the wrong GT rows, which would manufacture false per-cell errors.
     # Single key: among GT-usable fields (>=0.8 non-null, >=0.5 unique on GT), pick the
     # MOST-UNIQUE one (match_rate as tiebreak). Wherever a real identifier exists it IS the
     # most-unique field, so this matches rows on the true key — fixing mis-pairs a match_rate
