@@ -92,10 +92,19 @@ no hand-picked keys, so there is no lever to bias the result. The key is inferre
 
 Rows are then bucketed by key (one bucket when there is no key) and paired **by content**
 within each bucket: identical rows lock first, then the best-overlap residual is matched
-greedily. Only when a bucket's residual is too large to pair greedily does it fall back
-to positional order, purely to bound the cost — never as the primary alignment. Each
-ground-truth row can be claimed once, so duplicate rows a system emits stay unmatched and
-correctly lower its precision.
+greedily. When a bucket's residual is too large to score every pair, candidates are
+looked up through an index on cell values (a row that differs from a ground-truth row in
+one field is found exactly; otherwise its rarest values are used), so the cost stays
+bounded without falling back to list position. No step uses row position, so listing the
+same rows in a different order never changes a score. Each ground-truth row can be
+claimed once, so duplicate rows a system emits stay unmatched and correctly lower its
+precision.
+
+Without a key, nothing but content says two rows are the same record, so a keyless pair
+counts as a **matched row** only if it agrees on at least half of the ground-truth row's
+fields (`KEYLESS_MIN_OVERLAP`). Rows below that bar stay unmatched and are charged to
+precision and recall like any other unmatched row; a row of unrelated values is never a
+match just because the row counts line up.
 
 Because the key is anchored on the ground truth, a system that mis-extracts the key
 simply produces unmatched rows (its own precision/recall hit) — it never forces a

@@ -28,10 +28,12 @@ To compare two row lists we infer a primary KEY from the data (no hand-picking, 
 way to bias the result): a single column that uniquely identifies rows if one exists,
 else a unique *combination* of columns, else no key at all. Rows are then bucketed by
 key (one bucket when there is no key) and paired BY CONTENT within each bucket —
-identical rows lock first, then the best-overlap residual greedily; only when a bucket's
-residual is too large to pair greedily does it fall back to positional order to bound
-cost. Each ground-truth row can be claimed once, so duplicate rows a model emits stay
-unmatched and correctly lower precision.
+identical rows lock first, then the best-overlap residual; large residuals use an
+index on cell values instead of an all-pairs scan. No step looks at row position, so
+the scores do not depend on the order rows are listed in. Without a key, a pair only
+counts as a matched row if it agrees on at least KEYLESS_MIN_OVERLAP of the GT row's
+fields; otherwise both rows stay unmatched. Each ground-truth row can be claimed once,
+so duplicate rows a model emits stay unmatched and correctly lower precision.
 
 FAIRNESS
 --------
@@ -46,6 +48,8 @@ the ground truth itself is correct.
 
 from __future__ import annotations
 
+import functools
+import heapq
 import json
 import re
 import unicodedata
@@ -76,6 +80,21 @@ Json = Any  # parsed-JSON value: dict / list / scalar
 
 
 def canonical(v: Json) -> str:
+    """Canonicalize ONE value (see `_canonical`). Scalars are memoized: the grader
+    canonicalizes the same cell values many times (key inference, bucketing, leaf
+    comparison), and on the largest documents that dominated the run time."""
+    if isinstance(v, (str, int, float)):
+        return _canonical_cached(type(v).__name__, v)
+    return _canonical(v)
+
+
+@functools.lru_cache(maxsize=1 << 20)
+def _canonical_cached(_t: str, v: str | float) -> str:
+    # the type name is part of the cache key so 1, 1.0 and True never share an entry
+    return _canonical(v)
+
+
+def _canonical(v: Json) -> str:
     """Canonicalize ONE value so only cosmetic noise is folded — never real content.
     1. None -> "" ; lowercase ; strip.
     2. Typography: smart quotes/apostrophes/dashes -> ascii.
@@ -248,17 +267,166 @@ def _canon_sig(v: Json) -> Any:
     return canonical(v)
 
 
-_GREEDY_CAP = 4000  # residual_p * residual_g above this -> order-pair to bound cost
+_GREEDY_CAP = 4000  # residual_p * residual_g above this -> indexed pairing to bound cost
+
+# A keyless row pair only counts as the same record (a "matched" row for precision/
+# recall) when it agrees on at least this share of the ground-truth row's fields.
+# Without a key there is nothing else that says two rows are the same record, so a
+# pair below this bar is two unmatched rows, not one row with wrong values.
+KEYLESS_MIN_OVERLAP = 0.5
+
+_INDEX_PROBES = 3  # rarest cells of a predicted row used to look up candidate GT rows
+_INDEX_TOP = 8  # best candidates kept per predicted row in the indexed path
+_INDEX_BUDGET = 512  # max candidate GT rows scored per predicted row in the indexed path
+_EXHAUSTIVE_CAP = 250_000  # pred x GT residual pairs up to which every pair is scored
+
+
+def _cells(row: dict[str, Json]) -> frozenset[tuple[str, str]]:
+    """A row as a set of (field, canonical value) cells, for overlap counting.
+    For flat rows the overlap of two cell sets equals grade_value's matched leaves."""
+    out = set()
+    for k, v in row.items():
+        if v is None:
+            continue
+        if isinstance(v, (dict, list)):
+            out.add((k, repr(_canon_sig(v))))
+        else:
+            out.add((k, canonical(v)))
+    return frozenset(out)
+
+
+def _overlap_edges(
+    cp: list[frozenset[tuple[str, str]]],
+    cg: list[frozenset[tuple[str, str]]],
+    sp: list[tuple[Any, ...]],
+    sg: list[tuple[Any, ...]],
+    pi: list[int],
+    gi: list[int],
+    min_overlap: float,
+) -> tuple[list[tuple[int, int, int]], bool]:
+    """Candidate pairs between pred rows `pi` and GT rows `gi` as edges
+    (-overlap, i, j). Returns (edges, exhaustive)."""
+
+    def ok(shared: int, j: int) -> bool:
+        return shared > 0 and shared >= min_overlap * len(cg[j])
+
+    edges: list[tuple[int, int, int]] = []
+    if len(pi) * len(gi) <= _EXHAUSTIVE_CAP:  # cheap set intersections: score every pair
+        for i in pi:
+            a = cp[i]
+            for j in gi:
+                n = len(a & cg[j])
+                if ok(n, j):
+                    edges.append((-n, i, j))
+        return edges, True
+    # 1) rows that differ from a GT row in exactly one field's value: found exactly
+    #    through a "row minus field f" signature, O(fields) per row.
+    loo: dict[tuple[str, frozenset[tuple[str, str]]], list[int]] = {}
+    post: dict[tuple[str, str], list[int]] = {}
+    for j in gi:
+        for cell in cg[j]:
+            loo.setdefault((cell[0], cg[j] - {cell}), []).append(j)
+            post.setdefault(cell, []).append(j)
+    for i in pi:
+        a = cp[i]
+        cand: set[int] = set()
+        for cell in a:
+            cand.update(loo.get((cell[0], a - {cell}), ()))
+        if not cand:
+            # 2) otherwise: candidates from the row's rarest cells, within a bounded
+            #    budget so very common values cannot blow up the cost.
+            probes = sorted((cell for cell in a if cell in post), key=lambda x: (len(post[x]), x))
+            for cell in probes[:_INDEX_PROBES]:
+                plist = post[cell]
+                if cand and len(cand) + len(plist) > _INDEX_BUDGET:
+                    break
+                if len(plist) > _INDEX_BUDGET:  # truncate by content, never by position
+                    plist = heapq.nsmallest(_INDEX_BUDGET, plist, key=lambda j: sg[j])
+                cand.update(plist)
+        scored = sorted(((len(a & cg[j]), sg[j], j) for j in cand), key=lambda t: (-t[0], t[1]))
+        for n, _sig, j in scored[:_INDEX_TOP]:
+            if ok(n, j):
+                edges.append((-n, i, j))
+    return edges, False
+
+
+def _assign(
+    edges: list[tuple[int, int, int]],
+    sp: list[Any],
+    sg: list[Any],
+    pairs: list[tuple[dict[str, Json], dict[str, Json]]],
+    res_p: list[dict[str, Json]],
+    res_g: list[dict[str, Json]],
+    used_p: set[int],
+    used_g: set[int],
+) -> None:
+    """Best-first one-to-one assignment of (-score, i, j) edges, appended to `pairs`.
+    Among equally good pairs, the ones whose rows have the fewest equally good
+    alternatives go first (so a row with a single best partner is not starved), then
+    row content decides; list position never does."""
+    deg: Counter[tuple[str, int, int]] = Counter()
+    for n, i, j in edges:
+        deg["p", i, n] += 1
+        deg["g", j, n] += 1
+    edges.sort(key=lambda e: (e[0], deg["p", e[1], e[0]] + deg["g", e[2], e[0]], sp[e[1]], sg[e[2]]))
+    for _n, i, j in edges:
+        if i in used_p or j in used_g:
+            continue
+        used_p.add(i)
+        used_g.add(j)
+        pairs.append((res_p[i], res_g[j]))
+
+
+def _overlap_pairs(
+    res_p: list[dict[str, Json]], res_g: list[dict[str, Json]], min_overlap: float
+) -> tuple[list[tuple[dict[str, Json], dict[str, Json]]], list[int], list[int]]:
+    """Order-independent best-overlap pairing of two row lists.
+
+    Scores candidate pairs by shared cells, then assigns greedily from the highest
+    overlap down, breaking ties by row content (never by list position), so permuting
+    either input cannot change the result. Small residuals score every pair; large ones
+    look up candidates through an index (rounds repeat on what is left, ending with an
+    exhaustive round once it is small), which keeps the cost near-linear instead of
+    falling back to positional order. Pairs sharing fewer than `min_overlap` of the GT
+    row's cells are not formed. Returns (pairs, unpaired pred idx, unpaired GT idx)."""
+    cp = [_cells(r) for r in res_p]
+    cg = [_cells(r) for r in res_g]
+    sp = [tuple(sorted(c)) for c in cp]  # content signatures: the only tie-breakers
+    sg = [tuple(sorted(c)) for c in cg]
+    pi = list(range(len(res_p)))
+    gi = list(range(len(res_g)))
+    pairs: list[tuple[dict[str, Json], dict[str, Json]]] = []
+    while pi and gi:
+        edges, exhaustive = _overlap_edges(cp, cg, sp, sg, pi, gi, min_overlap)
+        used_p: set[int] = set()
+        used_g: set[int] = set()
+        _assign(edges, sp, sg, pairs, res_p, res_g, used_p, used_g)
+        pi = [i for i in pi if i not in used_p]
+        gi = [j for j in gi if j not in used_g]
+        if exhaustive or not used_p:
+            break
+    up = sorted(pi, key=lambda i: sp[i])
+    ug = sorted(gi, key=lambda j: sg[j])
+    return pairs, up, ug
 
 
 def _pair_bucket(
-    prs: list[dict[str, Json]], grs: list[dict[str, Json]]
+    prs: list[dict[str, Json]], grs: list[dict[str, Json]], keyless: bool = False
 ) -> tuple[list[tuple[dict[str, Json], dict[str, Json]]], list[dict[str, Json]], list[dict[str, Json]]]:
-    """Pair pred rows to GT rows within ONE key bucket by CONTENT, not order:
-    exact-content rows first (O(n)), then greedy best-overlap for the residual.
-    Returns (pairs, unmatched_pred, unmatched_gt). The pair COUNT is unchanged from
-    order-pairing (always min(len(prs), len(grs))) -> precision/recall never move;
-    only WHICH rows pair changes, which can only raise matched leaves, never lower."""
+    """Pair pred rows to GT rows within ONE bucket by CONTENT, not order:
+    exact-content rows first (O(n)), then best overlap for the residual.
+
+    Keyed bucket (rows already share the inferred key, so they are the same record
+    by definition): the pair count is min(len(prs), len(grs)) and only WHICH rows pair
+    depends on content; small residuals keep the greedy best-overlap pass (now run in
+    content order), large ones use the indexed pairing and pair leftovers in content
+    order. Neither path looks at list position.
+
+    Keyless bucket (no key could be inferred): rows are paired by overlap from the
+    best pair down, and a pair counts only if it agrees on at least
+    KEYLESS_MIN_OVERLAP of the GT row's fields. Everything else stays unmatched and
+    is charged to precision/recall, so a row of unrelated values is not a "match".
+    Returns (pairs, unmatched_pred, unmatched_gt)."""
     gsig: dict[Any, list[dict[str, Json]]] = {}
     for r in grs:
         gsig.setdefault(_canon_sig(r), []).append(r)
@@ -273,19 +441,29 @@ def _pair_bucket(
     res_g = [r for rs in gsig.values() for r in rs]
     if not res_p or not res_g:
         return pairs, res_p, res_g
-    if len(res_p) * len(res_g) > _GREEDY_CAP:  # bound worst case -> order-pair residual
-        n = min(len(res_p), len(res_g))
-        pairs += list(zip(res_p[:n], res_g[:n]))
-        return pairs, res_p[n:], res_g[n:]
-    gpool = list(res_g)
-    up: list[dict[str, Json]] = []
-    for pr in res_p:
-        if not gpool:
-            up.append(pr)
-            continue
-        j = max(range(len(gpool)), key=lambda k: grade_value(pr, gpool[k])[1])
-        pairs.append((pr, gpool.pop(j)))
-    return pairs, up, gpool
+    if keyless:
+        op, up_i, ug_i = _overlap_pairs(res_p, res_g, KEYLESS_MIN_OVERLAP)
+        return pairs + op, [res_p[i] for i in up_i], [res_g[j] for j in ug_i]
+    if len(res_p) * len(res_g) > _GREEDY_CAP:  # bound worst case without using list order
+        op, up_i, ug_i = _overlap_pairs(res_p, res_g, 0.0)
+        n = min(len(up_i), len(ug_i))
+        op += [(res_p[i], res_g[j]) for i, j in zip(up_i[:n], ug_i[:n])]
+        return pairs + op, [res_p[i] for i in up_i[n:]], [res_g[j] for j in ug_i[n:]]
+    # best-first over every pair (scored with grade_value, so nested values count
+    # leaf by leaf), ties broken by content: same result whatever order rows came in
+    sp = [repr(_canon_sig(r)) for r in res_p]
+    sg = [repr(_canon_sig(r)) for r in res_g]
+    edges = [
+        (-grade_value(pr, gr)[1], i, j) for i, pr in enumerate(res_p) for j, gr in enumerate(res_g)
+    ]
+    used_p: set[int] = set()
+    used_g: set[int] = set()
+    _assign(edges, sp, sg, pairs, res_p, res_g, used_p, used_g)
+    up_i = sorted((i for i in range(len(res_p)) if i not in used_p), key=lambda i: sp[i])
+    ug_i = sorted((j for j in range(len(res_g)) if j not in used_g), key=lambda j: sg[j])
+    n = min(len(up_i), len(ug_i))  # keyed: leftovers are still the same records
+    pairs += [(res_p[i], res_g[j]) for i, j in zip(up_i[:n], ug_i[:n])]
+    return pairs, [res_p[i] for i in up_i[n:]], [res_g[j] for j in ug_i[n:]]
 
 
 def _match_rows(
@@ -293,10 +471,10 @@ def _match_rows(
 ) -> tuple[list[tuple[dict[str, Json], dict[str, Json]]], list[dict[str, Json]], list[dict[str, Json]]]:
     """Match two object-row lists. With a key: bucket by key, then content-pair
     within each bucket (fixes key-collision mispairs on repetitive tables). Without
-    a key: one bucket, content-pair all (replaces a positional align that mismatched
-    whenever row order/count differed)."""
+    a key: one bucket, paired by content overlap with a minimum-overlap bar (see
+    `_pair_bucket`), so neither row order nor row count alone decides a match."""
     if not kf:
-        return _pair_bucket(list(p), list(g))
+        return _pair_bucket(list(p), list(g), keyless=True)
     gb: dict[tuple[Any, ...], list[dict[str, Json]]] = {}
     for i, r in enumerate(g):
         gb.setdefault(_rowkey(r, kf, i), []).append(r)
